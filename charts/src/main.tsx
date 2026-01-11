@@ -1,0 +1,20 @@
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import './index.css'
+import { Landing } from './pages/Landing.tsx'
+import { Charts } from './pages/Charts.tsx'
+import { Academy } from './pages/Academy.tsx'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/charts" element={<Charts />} />
+        <Route path="/academy" element={<Academy />} />
+      </Routes>
+    </BrowserRouter>
+  </StrictMode>,
+)
+

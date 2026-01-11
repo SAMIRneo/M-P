@@ -1,0 +1,578 @@
+import * as THREE from 'three';
+import gsap from 'gsap';
+
+export class Player {
+  constructor(scene, camera, terrain, biomes = []) {
+    this.scene = scene;
+    this.camera = camera;
+    this.terrain = terrain;
+    this.biomes = biomes;
+    
+    this.group = new THREE.Group();
+    this.group.position.set(1200, 25, 0);
+    this.scene.add(this.group);
+
+    this.visualGroup = new THREE.Group();
+    this.visualGroup.rotation.y = Math.PI;
+    this.group.add(this.visualGroup);
+
+    this.speed = 45;
+    this.walkSpeed = 25;
+    this.turnSpeed = 4.5;
+    this.isMoving = false;
+    this.isOnFoot = false;
+
+    this.keys = {
+      forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      boost: false
+    };
+
+    this.comicParticles = [];
+    this.flameGroup = new THREE.Group();
+
+    this.initMaterials();
+    this.initModel();
+    
+    // Flame group is now part of the hoverboard to follow its movement perfectly
+    this.hoverboard.add(this.flameGroup);
+    
+    this.initControls();
+    this.initFlames();
+
+    this.raycaster = new THREE.Raycaster();
+    this.downVector = new THREE.Vector3(0, -1, 0);
+    this.terrainHeight = 15;
+    this.collidables = [];
+  }
+
+  setCollidables(collidables) {
+    this.collidables = collidables;
+  }
+
+  checkCollisions(nextPos) {
+    const playerRadius = 3;
+    for (const sphere of this.collidables) {
+      const dx = nextPos.x - sphere.x;
+      const dz = nextPos.z - sphere.z;
+      const distSq = dx * dx + dz * dz;
+      const minDist = playerRadius + sphere.radius;
+      if (distSq < minDist * minDist) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  initMaterials() {
+    this.materials = {
+      suit: new THREE.MeshToonMaterial({ color: 0x00d2ff }), // Vibrant Cyan BD suit
+      armor: new THREE.MeshToonMaterial({ color: 0xff6d00 }), // Vivid Orange armor
+      visor: new THREE.MeshToonMaterial({ 
+        color: 0xffff00, 
+        transparent: true, 
+        opacity: 0.9,
+        emissive: 0xffff00,
+        emissiveIntensity: 3
+      }),
+      pack: new THREE.MeshToonMaterial({ color: 0x7c4dff }), // Vivid purple
+      neon: new THREE.MeshBasicMaterial({ 
+        color: 0x00ff00, // Bright green neon
+      }),
+      metal: new THREE.MeshToonMaterial({ color: 0x666666 }),
+      accent: new THREE.MeshBasicMaterial({ 
+        color: 0xff00ff, // Hot pink accent
+      }),
+      outline: new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide }),
+      board: new THREE.MeshToonMaterial({ color: 0x9c27b0 }), // Vibrant Purple board
+      boardAccent: new THREE.MeshToonMaterial({ color: 0x00ff00 }), // Neon green accents
+      comicWhite: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }),
+      comicYellow: new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }),
+      comicOrange: new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.7 }),
+      flame: new THREE.MeshBasicMaterial({
+        color: 0xff3d00, // Bright Orange flames
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide
+      }),
+      flameCore: new THREE.MeshBasicMaterial({
+        color: 0xffff00, // Bright Yellow core
+        transparent: true,
+        opacity: 0.95
+      }),
+      flameTrail: new THREE.MeshBasicMaterial({
+        color: 0xff1744, // Vivid Red trail
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide
+      }),
+      boots: new THREE.MeshToonMaterial({ color: 0xff6d00 })
+    };
+  }
+
+  addOutline(mesh, thickness = 0.05) {
+    const outline = mesh.clone();
+    outline.material = this.materials.outline;
+    outline.scale.multiplyScalar(1 + thickness);
+    mesh.add(outline);
+    return mesh;
+  }
+
+  createLimb(width, height, material) {
+    const group = new THREE.Group();
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, width),
+      material
+    );
+    mesh.position.y = -height / 2;
+    this.addOutline(mesh, 0.15);
+    group.add(mesh);
+    return group;
+  }
+
+  initFlames() {
+    this.comicParticles = [];
+    const particleCount = 20;
+    
+    for (let i = 0; i < particleCount; i++) {
+      // Speed lines (long thin boxes)
+      const lineGeo = new THREE.BoxGeometry(0.15, 0.15, 6 + Math.random() * 4);
+      const line = new THREE.Mesh(lineGeo, this.materials.comicWhite);
+      line.visible = false;
+      this.flameGroup.add(line);
+      
+      // Impact circles (flat discs)
+      const circleGeo = new THREE.CircleGeometry(0.8 + Math.random() * 0.6, 8);
+      const circle = new THREE.Mesh(circleGeo, Math.random() > 0.5 ? this.materials.comicYellow : this.materials.comicOrange);
+      circle.rotation.x = -Math.PI / 2;
+      circle.visible = false;
+      this.flameGroup.add(circle);
+      
+      this.comicParticles.push({
+        line,
+        circle,
+        active: false,
+        timer: 0,
+        speed: 40 + Math.random() * 20,
+        offset: new THREE.Vector3(
+          (Math.random() - 0.5) * 2.5,
+          (Math.random() - 0.5) * 0.5,
+          4.5
+        )
+      });
+    }
+  }
+
+  updateFlames(time, isBoosting) {
+    this.comicParticles.forEach((p) => {
+      if (isBoosting) {
+        if (!p.active || p.timer > 1) {
+          p.active = true;
+          p.timer = 0;
+          p.line.visible = true;
+          p.circle.visible = true;
+          p.line.position.copy(p.offset);
+          p.circle.position.copy(p.offset);
+        }
+        
+        p.timer += 0.05;
+        const t = p.timer;
+        
+        // Move backward snappy
+        p.line.position.z = p.offset.z + t * p.speed;
+        p.circle.position.z = p.offset.z + t * p.speed * 0.7;
+        
+        // Shrink and disappear
+        const scale = 1 - t;
+        p.line.scale.set(1, 1, scale);
+        p.circle.scale.set(scale, scale, scale);
+        
+        p.line.material.opacity = (1 - t) * 0.9;
+        p.circle.material.opacity = (1 - t) * 0.8;
+      } else {
+        p.active = false;
+        p.line.visible = false;
+        p.circle.visible = false;
+        p.timer = 2; // Ensure reset
+      }
+    });
+  }
+
+  initModel() {
+    this.torsoGroup = new THREE.Group();
+    this.torsoGroup.position.y = 5.5;
+    this.visualGroup.add(this.torsoGroup);
+
+    // Cubic Future Astronaut Suit Torso
+    const torso = new THREE.Mesh(
+      new THREE.BoxGeometry(2.2, 3.5, 1.8),
+      this.materials.suit
+    );
+    this.addOutline(torso, 0.1);
+    this.torsoGroup.add(torso);
+
+    // Chest Armor Plate
+    const chestPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 1.5, 0.6),
+      this.materials.armor
+    );
+    chestPlate.position.set(0, 0.5, 0.8);
+    this.addOutline(chestPlate, 0.1);
+    this.torsoGroup.add(chestPlate);
+
+    // Neon Strip on Chest
+    const chestNeon = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.15, 0.1),
+      this.materials.neon
+    );
+    chestNeon.position.set(0, 0.5, 1.15);
+    this.torsoGroup.add(chestNeon);
+
+    // Tactical Backpack
+    const backpack = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 3.0, 1.2),
+      this.materials.armor
+    );
+    backpack.position.set(0, 0, -1.0);
+    this.addOutline(backpack, 0.08);
+    this.torsoGroup.add(backpack);
+
+    // Glowing Power Core on Backpack
+    const core = new THREE.Mesh(
+      new THREE.BoxGeometry(0.8, 0.8, 0.3),
+      this.materials.neon
+    );
+    core.position.set(0, 0, -1.7);
+    this.torsoGroup.add(core);
+
+    // Futuristic Cubic Helmet
+    this.headGroup = new THREE.Group();
+    this.headGroup.position.y = 9.2;
+    this.visualGroup.add(this.headGroup);
+
+    const helmet = new THREE.Mesh(
+      new THREE.BoxGeometry(2.2, 2.2, 2.2),
+      this.materials.suit
+    );
+    this.addOutline(helmet, 0.12);
+    this.headGroup.add(helmet);
+
+    // Advanced Flat Visor
+    const visor = new THREE.Mesh(
+      new THREE.BoxGeometry(2.0, 1.2, 0.2),
+      this.materials.visor
+    );
+    visor.position.set(0, 0.2, 1.1);
+    this.headGroup.add(visor);
+
+    // Tech detail on side of helmet
+    const helmetSide = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.8, 0.8),
+      this.materials.armor
+    );
+    helmetSide.position.set(1.15, 0, 0);
+    this.headGroup.add(helmetSide);
+
+    // Limbs - Cubic Low Poly
+    this.leftArm = this.createLimb(0.7, 3.8, this.materials.suit);
+    this.leftArm.position.set(-1.8, 7.8, 0);
+    this.visualGroup.add(this.leftArm);
+
+    // Shoulder Pad Left
+    const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.8, 1.0), this.materials.armor);
+    shoulderL.position.y = 0.1;
+    this.leftArm.add(shoulderL);
+
+    this.rightArm = this.createLimb(0.7, 3.8, this.materials.suit);
+    this.rightArm.position.set(1.8, 7.8, 0);
+    this.visualGroup.add(this.rightArm);
+
+    // Shoulder Pad Right
+    const shoulderR = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.8, 1.0), this.materials.armor);
+    shoulderR.position.y = 0.1;
+    this.rightArm.add(shoulderR);
+
+    this.leftLeg = this.createLimb(0.8, 4.0, this.materials.suit);
+    this.leftLeg.position.set(-1.0, 4.2, 0);
+    this.visualGroup.add(this.leftLeg);
+
+    this.rightLeg = this.createLimb(0.8, 4.0, this.materials.suit);
+    this.rightLeg.position.set(1.0, 4.2, 0);
+    this.visualGroup.add(this.rightLeg);
+
+    // FLAT MODERN HOVERBOARD DESIGN
+    this.hoverboard = new THREE.Group();
+    this.hoverboard.position.y = 0.5;
+    this.hoverboard.rotation.y = Math.PI;
+    this.visualGroup.add(this.hoverboard);
+
+    // Main Flat Deck
+    const boardBase = new THREE.Mesh(
+      new THREE.BoxGeometry(4.0, 0.25, 8.0),
+      this.materials.board
+    );
+    this.addOutline(boardBase, 0.1);
+    this.hoverboard.add(boardBase);
+
+    // Neon stripe on top
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.1, 7.5),
+      this.materials.boardAccent
+    );
+    stripe.position.y = 0.18;
+    this.hoverboard.add(stripe);
+
+    // Flat Rear thrusters block
+    const rearBlock = new THREE.Mesh(
+      new THREE.BoxGeometry(3.5, 0.5, 1.5),
+      this.materials.metal
+    );
+    rearBlock.position.z = 3.5;
+    this.addOutline(rearBlock, 0.1);
+    this.hoverboard.add(rearBlock);
+
+    // Thruster details
+    const thruster = new THREE.Mesh(
+      new THREE.BoxGeometry(2.0, 0.4, 0.5),
+      this.materials.accent
+    );
+    thruster.position.set(0, 0, 4.25);
+    this.addOutline(thruster, 0.1);
+    this.hoverboard.add(thruster);
+
+    this.group.traverse(child => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+  }
+
+  initControls() {
+    window.addEventListener('keydown', (e) => {
+      switch (e.code) {
+        case 'KeyW': case 'ArrowUp': case 'KeyZ': this.keys.forward = true; break;
+        case 'KeyS': case 'ArrowDown': this.keys.backward = true; break;
+        case 'KeyA': case 'ArrowLeft': case 'KeyQ': this.keys.left = true; break;
+        case 'KeyD': case 'ArrowRight': this.keys.right = true; break;
+        case 'Space': this.keys.boost = true; break;
+        case 'KeyR': this.toggleFootMode(); break;
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      switch (e.code) {
+        case 'KeyW': case 'ArrowUp': case 'KeyZ': this.keys.forward = false; break;
+        case 'KeyS': case 'ArrowDown': this.keys.backward = false; break;
+        case 'KeyA': case 'ArrowLeft': case 'KeyQ': this.keys.left = false; break;
+        case 'KeyD': case 'ArrowRight': this.keys.right = false; break;
+        case 'Space': this.keys.boost = false; break;
+      }
+    });
+  }
+
+  toggleFootMode() {
+    this.isOnFoot = !this.isOnFoot;
+    
+    gsap.to(this.hoverboard.scale, {
+      x: this.isOnFoot ? 0 : 1,
+      y: this.isOnFoot ? 0 : 1,
+      z: this.isOnFoot ? 0 : 1,
+      duration: 0.4,
+      ease: "back.inOut"
+    });
+
+    if (this.isOnFoot) {
+      gsap.to(this.leftLeg.position, { y: 4.5, z: 0, duration: 0.3 });
+      gsap.to(this.rightLeg.position, { y: 4.5, z: 0, duration: 0.3 });
+      gsap.to(this.leftArm.position, { y: 7.5, z: 0, duration: 0.3 });
+      gsap.to(this.rightArm.position, { y: 7.5, z: 0, duration: 0.3 });
+    }
+  }
+
+  update(time, delta, controls) {
+    this.isMoving = this.keys.forward || this.keys.backward || this.keys.left || this.keys.right;
+
+    if (this.scarfParts) {
+      this.scarfParts.forEach((part, i) => {
+        const speed = this.isMoving ? 15 : 5;
+        const amp = this.isMoving ? 0.4 : 0.15;
+        part.rotation.y = Math.sin(time * speed - i * 0.7) * amp;
+        part.rotation.x = Math.sin(time * speed * 0.5 - i * 0.4) * amp * 0.3;
+      });
+    }
+
+    const moveSpeed = this.isOnFoot ? this.walkSpeed : this.speed;
+    const currentSpeed = this.keys.boost ? moveSpeed * 2.5 : moveSpeed;
+    this.materials.accent.emissiveIntensity = this.keys.boost ? 8 : 2;
+
+    this.updateFlames(time, this.keys.boost && !this.isOnFoot);
+
+    if (this.isMoving) {
+      if (this.keys.left) this.group.rotation.y += this.turnSpeed * delta;
+      if (this.keys.right) this.group.rotation.y -= this.turnSpeed * delta;
+
+      const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.group.quaternion);
+      const moveStep = currentSpeed * delta;
+      const nextPos = this.group.position.clone();
+      
+      const potentialPos = this.group.position.clone();
+      if (this.keys.forward) potentialPos.add(direction.clone().multiplyScalar(moveStep));
+      if (this.keys.backward) potentialPos.add(direction.clone().multiplyScalar(-moveStep * 0.5));
+
+      if (!this.checkCollisions(potentialPos)) {
+        nextPos.copy(potentialPos);
+      } else {
+        // Try sliding logic or just stop
+        // For simplicity, we just don't update nextPos if there's a collision
+      }
+
+      for (const biome of this.biomes) {
+        if (!biome.config) continue;
+        const dist = new THREE.Vector2(nextPos.x, nextPos.z).distanceTo(new THREE.Vector2(biome.config.position.x, biome.config.position.z));
+        if (dist < biome.config.radius) {
+          if (!this.redirecting) {
+            this.redirecting = true;
+            window.open(biome.config.url, '_blank');
+            setTimeout(() => { this.redirecting = false; }, 3000);
+          }
+          return;
+        }
+      }
+
+      this.group.position.copy(nextPos);
+      
+      if (!this.isOnFoot) {
+        this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, (this.keys.left ? 0.25 : this.keys.right ? -0.25 : 0), 0.1);
+      } else {
+        this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, 0, 0.2);
+      }
+      
+      if (this.isOnFoot) {
+        const walkCycle = time * 10;
+        this.leftLeg.rotation.x = Math.sin(walkCycle) * 0.8;
+        this.rightLeg.rotation.x = Math.sin(walkCycle + Math.PI) * 0.8;
+        this.leftArm.rotation.x = Math.sin(walkCycle + Math.PI) * 0.6;
+        this.rightArm.rotation.x = Math.sin(walkCycle) * 0.6;
+        this.visualGroup.position.y = Math.abs(Math.sin(walkCycle * 2)) * 0.3;
+        
+        this.leftLeg.position.y = 4.5;
+        this.rightLeg.position.y = 4.5;
+        this.torsoGroup.position.y = 5.5;
+        this.headGroup.position.y = 8.8;
+        this.leftArm.position.y = 7.5;
+        this.rightArm.position.y = 7.5;
+      } else {
+        // HOVERING / FLOATING LOGIC
+        const hoverBob = Math.sin(time * 3) * 0.5; // Character bobs more
+        const boardBob = Math.sin(time * 3 + 0.5) * 0.2; // Board bobs slightly differently
+        
+        this.hoverboard.position.y = 0.8 + boardBob;
+        this.hoverboard.rotation.z = Math.sin(time * 2) * 0.05;
+        
+        // Lift the whole character body up for floating effect
+        const floatHeight = 2.5 + hoverBob; 
+        this.leftLeg.position.y = floatHeight + 4.5;
+        this.rightLeg.position.y = floatHeight + 4.5;
+        this.torsoGroup.position.y = floatHeight + 5.5;
+        this.headGroup.position.y = floatHeight + 8.8;
+        this.leftArm.position.y = floatHeight + 7.5;
+        this.rightArm.position.y = floatHeight + 7.5;
+        
+        // Floating pose
+        this.leftLeg.rotation.x = 0.2 + Math.sin(time * 2) * 0.1; 
+        this.leftLeg.position.z = 1.0;
+        this.rightLeg.rotation.x = -0.2 - Math.sin(time * 2) * 0.1; 
+        this.rightLeg.position.z = -1.0;
+        
+        this.leftArm.rotation.x = Math.sin(time * 4) * 0.2;
+        this.rightArm.rotation.x = -Math.sin(time * 4) * 0.2;
+        
+        this.visualGroup.position.y = 0;
+      }
+    } else {
+      this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, 0, 0.1);
+      this.visualGroup.position.y = THREE.MathUtils.lerp(this.visualGroup.position.y, 0, 0.1);
+      
+      if (this.isOnFoot) {
+        this.leftLeg.rotation.x = THREE.MathUtils.lerp(this.leftLeg.rotation.x, 0, 0.1);
+        this.rightLeg.rotation.x = THREE.MathUtils.lerp(this.rightLeg.rotation.x, 0, 0.1);
+        this.leftArm.rotation.x = THREE.MathUtils.lerp(this.leftArm.rotation.x, 0.1, 0.1);
+        this.rightArm.rotation.x = THREE.MathUtils.lerp(this.rightArm.rotation.x, 0.1, 0.1);
+      } else {
+        // IDLE FLOATING
+        const hoverBob = Math.sin(time * 1.5) * 0.3;
+        const boardBob = Math.sin(time * 1.5 + 0.2) * 0.1;
+        
+        this.hoverboard.position.y = 0.8 + boardBob;
+        
+        const floatHeight = 2.0 + hoverBob;
+        this.leftLeg.position.y = floatHeight + 4.5;
+        this.rightLeg.position.y = floatHeight + 4.5;
+        this.torsoGroup.position.y = floatHeight + 5.5;
+        this.headGroup.position.y = floatHeight + 8.8;
+        this.leftArm.position.y = floatHeight + 7.5;
+        this.rightArm.position.y = floatHeight + 7.5;
+
+        this.leftLeg.rotation.x = 0.1; this.leftLeg.position.z = 0.4;
+        this.rightLeg.rotation.x = -0.1; this.rightLeg.position.z = -0.4;
+      }
+      if (this.headGroup) this.headGroup.rotation.y = Math.sin(time * 1.5) * 0.15;
+    }
+
+    this.terrain.mesh.updateMatrixWorld(true);
+    const rayOrigin = this.group.position.clone().setY(this.group.position.y + 100);
+    this.raycaster.set(rayOrigin, this.downVector);
+    const intersects = this.raycaster.intersectObject(this.terrain.mesh, true);
+    
+    if (intersects.length > 0) {
+      this.terrainHeight = intersects[0].point.y;
+    }
+
+    const targetY = this.isOnFoot ? this.terrainHeight + 3.2 : this.terrainHeight + 2.5;
+    this.group.position.y = THREE.MathUtils.lerp(this.group.position.y, targetY, 0.15);
+    if (this.group.position.y < this.terrainHeight + 1.5) this.group.position.y = this.terrainHeight + 1.5;
+
+    this.updateCamera(controls, delta);
+  }
+
+  updateCamera(controls, delta) {
+    if (!controls) return;
+    
+    // Position du point de regard (un peu au-dessus et décalé sur l'épaule)
+    const shoulderOffset = new THREE.Vector3(1.5, 7.5, 0);
+    shoulderOffset.applyQuaternion(this.group.quaternion);
+    const lookTarget = this.group.position.clone().add(shoulderOffset);
+    
+    // Suivi fluide de la cible
+    controls.target.lerp(lookTarget, 0.1);
+
+    // Si le joueur bouge, on aligne doucement la caméra derrière lui
+    if (this.isMoving) {
+      const idealOffset = new THREE.Vector3(4, 9, 28); // Décalage épaule (droite, haut, arrière)
+      idealOffset.applyQuaternion(this.group.quaternion);
+      const targetCameraPos = this.group.position.clone().add(idealOffset);
+      
+      this.camera.position.lerp(targetCameraPos, 0.05);
+    }
+    
+    // Limitation de la distance pour garder l'effet vue épaule
+    if (!this.isMoving) {
+      const dist = this.camera.position.distanceTo(controls.target);
+      if (dist > 50) {
+        // Si on est trop loin, on se rapproche doucement
+        const dir = this.camera.position.clone().sub(controls.target).normalize();
+        this.camera.position.lerp(controls.target.clone().add(dir.multiplyScalar(35)), 0.02);
+      }
+    }
+  }
+
+  dispose() {
+    this.scene.remove(this.group);
+    this.group.traverse(c => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) Array.isArray(c.material) ? c.material.forEach(m => m.dispose()) : c.material.dispose();
+    });
+  }
+}

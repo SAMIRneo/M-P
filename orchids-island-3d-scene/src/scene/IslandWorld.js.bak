@@ -1,0 +1,185 @@
+import * as THREE from 'three';
+import { Terrain } from './environment/Terrain.js';
+import { Ocean } from './environment/Ocean.js';
+import { Atmosphere } from './environment/Atmosphere.js';
+import { Volcano } from './environment/Volcano.js';
+import { Vegetation } from './environment/Vegetation.js';
+import { PrehistoricAssets } from './environment/PrehistoricAssets.js';
+import { BiomeFactory } from './biomes/BiomeFactory.js';
+import { BIOMES_CONFIG as biomesConfig } from './biomes/biomes-config.js';
+import { Player } from './entities/Player.js';
+import { Dinosaur } from './entities/Dinosaur.js';
+
+export class IslandWorld {
+  constructor(scene, camera) {
+    this.scene = scene;
+    this.camera = camera;
+    this.interactiveObjects = [];
+    this.biomes = [];
+  }
+
+  async init() {
+    this.atmosphere = new Atmosphere(this.scene);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    this.ocean = new Ocean();
+    this.scene.add(this.ocean.mesh);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    this.terrain = new Terrain();
+    // We will make createTerrain async soon, but for now we call it
+    // To be truly fluid, we should await terrain generation
+    if (this.terrain.init) {
+      await this.terrain.init();
+    }
+    this.scene.add(this.terrain.mesh);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    this.vegetation = new Vegetation(this.scene, this.terrain);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    this.prehistoric = new PrehistoricAssets(this.scene, this.terrain);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    this.volcano = new Volcano(this.scene);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    // Collect all collision spheres
+    const collisionData = [
+      ...this.vegetation.getCollisionSpheres(),
+      ...this.prehistoric.getCollisionSpheres()
+    ];
+
+    for (const config of biomesConfig) {
+      const biome = BiomeFactory.create(this.scene, config);
+      this.biomes.push(biome);
+      
+        const terrainHeight = this.terrain.getHeightAt(config.position.x, config.position.z);
+        biome.group.position.y = terrainHeight;
+
+      
+      if (biome.marker) this.interactiveObjects.push(biome.marker);
+      if (biome.nftCard) this.interactiveObjects.push(biome.nftCard);
+      
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    
+    this.player = new Player(this.scene, this.camera, this.terrain, this.biomes);
+    this.player.setCollidables(collisionData);
+
+    // Create a variety of dinosaurs
+    this.dinosaurs = [];
+    const dinoPresets = [
+      { type: 'TREX', color: 0x2d4c3b, accentColor: 0xe6a15c, scale: 3.5 },
+      { type: 'TRICERATOPS', color: 0x3d4c3b, accentColor: 0xc6a15c, scale: 2.5 },
+      { type: 'BRACHIOSAURUS', color: 0x2d5c3b, accentColor: 0xd6a15c, scale: 4.0 },
+      { type: 'STEGOSAURUS', color: 0x3d5c4b, accentColor: 0xb6a15c, scale: 2.8 },
+      { type: 'RAPTOR', color: 0x2d4c2b, accentColor: 0xf6a15c, scale: 2.0 },
+      { type: 'TREX', color: 0x2d4c3b, accentColor: 0xe6a15c, scale: 3.0 }
+    ];
+
+    for (const preset of dinoPresets) {
+      const x = (Math.random() - 0.5) * 1500;
+      const z = (Math.random() - 0.5) * 1500;
+      const dino = new Dinosaur(this.scene, this.terrain, {
+        ...preset,
+        x, z,
+        allDinosaurs: this.dinosaurs,
+        speed: 0.8 + Math.random() * 0.5
+      });
+      this.dinosaurs.push(dino);
+    }
+    
+    return true;
+  }
+
+  setupLighting() {
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    this.scene.add(ambientLight);
+
+    const sunLight = new THREE.DirectionalLight(0xfffaf0, 1.8);
+    sunLight.position.set(300, 500, 300);
+    sunLight.castShadow = true;
+    
+    sunLight.shadow.mapSize.width = 2048; // Reduced from 4096 for perf
+    sunLight.shadow.mapSize.height = 2048;
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = 2000;
+    sunLight.shadow.camera.left = -2500;
+    sunLight.shadow.camera.right = 2500;
+    sunLight.shadow.camera.top = 2500;
+    sunLight.shadow.camera.bottom = -2500;
+    sunLight.shadow.bias = -0.001;
+    
+    this.scene.add(sunLight);
+
+    const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x228b22, 0.5);
+    this.scene.add(hemiLight);
+  }
+
+  getInteractiveObjects() {
+    return this.interactiveObjects;
+  }
+
+  highlightMarker(object) {
+    this.interactiveObjects.forEach(obj => {
+      if (obj.userData.isTeleport) {
+        const isHovered = obj === object || (object && object.parent === obj);
+        obj.scale.setScalar(isHovered ? 1.2 : 1.0);
+        if (obj.material) obj.material.emissiveIntensity = isHovered ? 3 : 2;
+      }
+      if (obj.userData.isNFT) {
+        const isHovered = obj === object || (object && object.parent === obj);
+        obj.position.y = obj.userData.baseY + (isHovered ? 5 : 0);
+      }
+    });
+  }
+
+  update(time, delta, controls) {
+    if (this.ocean) this.ocean.update(time);
+    if (this.player) this.player.update(time, delta, controls);
+    if (this.biomes) {
+      this.biomes.forEach(biome => {
+        if (biome.update) biome.update(time);
+      });
+    }
+    if (this.atmosphere) this.atmosphere.update(time);
+    if (this.volcano) this.volcano.update(time, delta);
+    if (this.vegetation) this.vegetation.update(time);
+    if (this.dinosaurs) {
+      this.dinosaurs.forEach(dino => dino.update(time, delta));
+    }
+  }
+
+  dispose() {
+    if (this.atmosphere) this.atmosphere.dispose();
+    if (this.ocean) this.ocean.dispose();
+    if (this.terrain && this.terrain.mesh) {
+      this.terrain.mesh.geometry.dispose();
+      this.terrain.mesh.material.dispose();
+    }
+    if (this.player) this.player.dispose();
+    if (this.vegetation) this.vegetation.dispose();
+    if (this.prehistoric) this.prehistoric.dispose();
+    if (this.dinosaurs) {
+      this.dinosaurs.forEach(dino => dino.dispose());
+    }
+    if (this.biomes) {
+      this.biomes.forEach(biome => {
+        if (biome.group) {
+          biome.group.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+              if (Array.isArray(child.material)) {
+                child.material.forEach(m => m.dispose());
+              } else {
+                child.material.dispose();
+              }
+            }
+          });
+          this.scene.remove(biome.group);
+        }
+      });
+    }
+  }
+}
